@@ -71,20 +71,3 @@ tests/
 .isaac-lab-docker-history
 .github/
 .git/
-# Ignore asset and large binary files
-g1_gr00t/source/assets/
-*.onnx
-*.zip
-*.mp4
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.mdl
-*.usdz
-*.usd
-*.blend
-*.bin
-*.npy
-*.pt
-*.pth

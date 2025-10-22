@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-# SPDX-License-Identifier: BSD-3-Clause
+# python scripts/test_groot.py --task G1-NutPour-v0 --task_description "Pick up the red tube and pour it into the yellow bowl" --video --device cuda:1
+# python scripts/test_groot.py --task_description "pick up the cylinder" --video --device cuda:1
 
 """Script to test G1 environment with GR00T N1.5 policy."""
 
@@ -34,6 +33,7 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import torch
 import os
+import json
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -57,18 +57,51 @@ def main():
     # Create environment
     print(f"[INFO]: Creating environment: {args_cli.task}")
     render_mode = "rgb_array" if args_cli.video else None
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
+    try:
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
+        print(f"[DEBUG]: gym.make() completed")
+    except Exception as e:
+        print(f"[ERROR]: Failed to create environment: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     # Print info
-    print(f"[INFO]: Observation space: {env.observation_space}")
-    print(f"[INFO]: Action space: {env.action_space}")
+    print(f"[DEBUG]: Environment created successfully")
+    print(f"[DEBUG]: Getting observation space...")
+    try:
+        obs_space = env.observation_space
+        print(f"[INFO]: Observation space: {obs_space}")
+    except Exception as e:
+        print(f"[ERROR]: Failed to get observation space: {e}")
+        import traceback
+        traceback.print_exc()
+        env.close()
+        return
+    
+    print(f"[DEBUG]: Getting action space...")
+    try:
+        act_space = env.action_space
+        print(f"[INFO]: Action space: {act_space}")
+    except Exception as e:
+        print(f"[ERROR]: Failed to get action space: {e}")
+        import traceback
+        traceback.print_exc()
+        env.close()
+        return
+    
+    # Create output directory first
+    output_dir = Path(f"logs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/{args_cli.task}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO]: Logging to {output_dir}")
     
     # Create and connect GR00T client
     print(f"\n[INFO]: Creating GR00T client...")
     groot_client = create_groot_client(
         host=args_cli.groot_host,
         port=args_cli.groot_port,
-        task_description=args_cli.task_description
+        task_description=args_cli.task_description,
+        log_dir=output_dir
     )
     
     print(f"[INFO]: Connecting to GR00T server at {args_cli.groot_host}:{args_cli.groot_port}...")
@@ -83,13 +116,15 @@ def main():
     print("\n[INFO]: Resetting environment...")
     obs, _ = env.reset()
     
+    # Set up robot state logging
+    robot_log_file = output_dir / "robot_states.jsonl"
+    
     # Set up video recording if requested
     video_containers = {}
     video_streams = {}
     video_dir = None
     if args_cli.video:
-        video_dir = Path(f"videos/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/{args_cli.task}")
-        video_dir.mkdir(parents=True, exist_ok=True)
+        video_dir = output_dir
         print(f"[INFO]: Recording videos to {video_dir}")
         
         # Set up video writers for each camera using PyAV
@@ -128,12 +163,53 @@ def main():
                 # Get action from GR00T
                 actions = groot_client.get_action(obs['policy'], env)
                 
+                # Log action before sending to robot
+                action_before_log = {
+                    "step": step_count + 1,
+                    "timestamp": datetime.now().isoformat(),
+                    "type": "action_to_robot",
+                    "action": actions.cpu().numpy().tolist()
+                }
+                with open(robot_log_file, 'a') as f:
+                    f.write(json.dumps(action_before_log) + '\n')
+                
                 # Expand to batch dimension
                 actions = actions.unsqueeze(0).to(env.unwrapped.device)
                 
                 # Step environment
                 obs, reward, terminated, truncated, info = env.step(actions)
                 step_count += 1
+                
+                # Log actual robot state after action injection
+                body_state = obs['policy']['robot_body_state'][0].cpu().numpy()
+                hand_state = obs['policy']['robot_hand_state'][0].cpu().numpy()
+                
+                # Extract joint positions (every 3rd value)
+                body_positions = body_state[::3]
+                hand_positions = hand_state[::3]
+                full_state = np.concatenate([body_positions, hand_positions])
+                
+                # Extract arm and hand positions (indices matching client)
+                left_arm_indices = list(range(15, 22))
+                right_arm_indices = list(range(29, 36))
+                left_hand_indices = list(range(22, 29))
+                right_hand_indices = list(range(36, 43))
+                
+                actual_state_log = {
+                    "step": step_count,
+                    "timestamp": datetime.now().isoformat(),
+                    "type": "robot_actual_state",
+                    "joint_positions": {
+                        "left_arm": full_state[left_arm_indices].tolist(),
+                        "right_arm": full_state[right_arm_indices].tolist(),
+                        "left_hand": full_state[left_hand_indices].tolist(),
+                        "right_hand": full_state[right_hand_indices].tolist()
+                    },
+                    "full_state": full_state.tolist(),
+                    "reward": float(reward[0].item())
+                }
+                with open(robot_log_file, 'a') as f:
+                    f.write(json.dumps(actual_state_log) + '\n')
                 
                 # Record video frames using PyAV
                 if args_cli.video and video_containers:

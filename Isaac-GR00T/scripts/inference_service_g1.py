@@ -1,17 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# CUDA_VISIBLE_DEVICES=1 python scripts/inference_service_g1.py --server --model-path /home/aidan/checkpoints/unitree-g1-finetune/ --data-config unitree_g1 --embodiment-tag new_embodiment
 
 """
 GR00T Inference Service
@@ -41,8 +28,13 @@ You can use bore to forward the port to your client: `159.223.171.199` is bore.p
 """
 
 import time
+import json
 from dataclasses import dataclass
 from typing import Literal
+from pathlib import Path
+from datetime import datetime
+import threading
+from queue import Queue
 
 import numpy as np
 import tyro
@@ -91,6 +83,115 @@ class ArgsConfig:
 
     http_server: bool = False
     """Whether to run it as HTTP server. Default is ZMQ server."""
+
+    log_dir: str = "logs/groot_server"
+    """Directory to save input/output logs."""
+
+
+#####################################################################################
+
+
+class LoggingRobotInferenceServer(RobotInferenceServer):
+    """Simple server that logs directly in the request loop."""
+    
+    def __init__(self, model, host: str = "*", port: int = 5555, api_token: str = None, log_dir: str = "logs/groot_server"):
+        super().__init__(model, host, port, api_token)
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.image_dir = self.log_dir / "images"
+        self.image_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        self.log_file = self.log_dir / f"server_log_{timestamp}.jsonl"
+        self.step_count = 0
+        
+        print(f"[SERVER LOG] Logging to {self.log_file}")
+        print(f"[SERVER LOG] Saving images to {self.image_dir}")
+    
+    def run(self):
+        """Override run to add inline logging."""
+        from gr00t.eval.service import MsgSerializer
+        import zmq
+        
+        addr = self.socket.getsockopt_string(zmq.LAST_ENDPOINT)
+        print(f"Server is ready and listening on {addr}")
+        
+        while self.running:
+            try:
+                message = self.socket.recv()
+                request = MsgSerializer.from_bytes(message)
+                
+                if not self._validate_token(request):
+                    self.socket.send(MsgSerializer.to_bytes({"error": "Unauthorized: Invalid API token"}))
+                    continue
+                
+                endpoint = request.get("endpoint", "get_action")
+                
+                if endpoint not in self._endpoints:
+                    raise ValueError(f"Unknown endpoint: {endpoint}")
+                
+                # Log and process get_action requests
+                if endpoint == "get_action":
+                    self.step_count += 1
+                    obs = request.get("data", {})
+                    
+                    # Log input
+                    input_log = {"step": self.step_count, "timestamp": datetime.now().isoformat(), "type": "input", "observation": {}}
+                    for key, value in obs.items():
+                        if isinstance(value, np.ndarray):
+                            input_log["observation"][key] = {
+                                "shape": list(value.shape), "dtype": str(value.dtype),
+                                "min": float(np.min(value)), "max": float(np.max(value)),
+                                "mean": float(np.mean(value)), "data": value.tolist()
+                            }
+                        else:
+                            input_log["observation"][key] = value if isinstance(value, list) else str(value)
+                    
+                    # Save image
+                    for key, value in obs.items():
+                        if 'video' in key.lower() and isinstance(value, np.ndarray) and value.ndim >= 3:
+                            img_data = value[0] if value.ndim == 4 else value
+                            try:
+                                from PIL import Image
+                                Image.fromarray(img_data.astype(np.uint8)).save(self.image_dir / f"step_{self.step_count:06d}.png")
+                            except:
+                                np.save(self.image_dir / f"step_{self.step_count:06d}.npy", img_data)
+                            break
+                    
+                    # Get action
+                    handler = self._endpoints[endpoint]
+                    time_start = time.time()
+                    result = handler.handler(obs)
+                    inference_time = time.time() - time_start
+                    
+                    # Log output
+                    output_log = {"step": self.step_count, "timestamp": datetime.now().isoformat(), "type": "output", "inference_time": inference_time, "action": {}}
+                    for key, value in result.items():
+                        if isinstance(value, np.ndarray):
+                            output_log["action"][key] = {
+                                "shape": list(value.shape), "dtype": str(value.dtype),
+                                "min": float(np.min(value)), "max": float(np.max(value)),
+                                "mean": float(np.mean(value)), "data": value.tolist()
+                            }
+                    
+                    # Write logs
+                    with open(self.log_file, 'a') as f:
+                        f.write(json.dumps(input_log) + '\n')
+                        f.write(json.dumps(output_log) + '\n')
+                    
+                    print(f"[SERVER LOG] Step {self.step_count}: Inference {inference_time:.3f}s")
+                else:
+                    # Other endpoints
+                    handler = self._endpoints[endpoint]
+                    result = handler.handler(request.get("data", {})) if handler.requires_input else handler.handler()
+                
+                self.socket.send(MsgSerializer.to_bytes(result))
+            except Exception as e:
+                print(f"Error in server: {e}")
+                import traceback
+                traceback.print_exc()
+                self.socket.send(MsgSerializer.to_bytes({"error": str(e)}))
 
 
 #####################################################################################
@@ -173,7 +274,7 @@ def main(args: ArgsConfig):
             )
             server.run()
         else:
-            server = RobotInferenceServer(policy, port=args.port, api_token=args.api_token)
+            server = LoggingRobotInferenceServer(policy, port=args.port, api_token=args.api_token, log_dir=args.log_dir)
             server.run()
 
     # Here is mainly a testing code

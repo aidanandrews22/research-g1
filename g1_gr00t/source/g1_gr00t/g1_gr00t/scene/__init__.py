@@ -6,6 +6,7 @@
 """Scene configurations."""
 
 from .cylinder_scene import CylinderSceneCfg
+from .nutpour_scene import NutPourSceneCfg
 
-__all__ = ["CylinderSceneCfg"]
+__all__ = ["CylinderSceneCfg", "NutPourSceneCfg"]
 

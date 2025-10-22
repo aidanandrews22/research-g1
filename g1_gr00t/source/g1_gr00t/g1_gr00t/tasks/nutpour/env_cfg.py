@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Environment configuration for G1 cylinder manipulation task."""
+"""Environment configuration for G1 NutPour manipulation task."""
 
 import torch
 import isaaclab.sim as sim_utils
@@ -20,34 +20,33 @@ from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 from g1_gr00t.config import G1_DEX3_43DOF_CFG, CameraPresets
-from g1_gr00t.scene import CylinderSceneCfg
+from g1_gr00t.scene import NutPourSceneCfg as BaseNutPourSceneCfg
 from . import mdp
 
 
 @configclass
-class MoveCylinderSceneCfg(CylinderSceneCfg):
-    """Scene configuration with robot and cameras added."""
+class NutPourTaskSceneCfg(BaseNutPourSceneCfg):
+    """Scene configuration with G1 robot and cameras added."""
     
     # G1 robot with 43 DOF (Dex3 hands)
-    # Robot positioned ~0.4m from cylinder (half arm's length)
-    # Cylinder is at [-2.58514, -2.78975, 0.84], robot at [-3.0, -2.81811, 0.8]
+    # Position robot in front of table
     robot: ArticulationCfg = G1_DEX3_43DOF_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(-3.0, -2.81811, 0.8),
-            rot=(1, 0, 0, 0),
+            pos=(0.0, 0.0, 0.93),
+            rot=(0.7071, 0, 0, 0.7071),  # 90 degree rotation to face table
             joint_pos={
                 # Leg joints - standing pose (locked)
                 ".*_hip_pitch_joint": -0.20,
                 ".*_knee_joint": 0.42,
                 ".*_ankle_pitch_joint": -0.23,
                 
-                # Arm joints - reaching pose
-                ".*_elbow_joint": 0.87,
-                "left_shoulder_roll_joint": 0.18,
-                "left_shoulder_pitch_joint": 0.35,
-                "right_shoulder_roll_joint": -0.18,
-                "right_shoulder_pitch_joint": 0.35,
+                # Arm joints - neutral reaching pose
+                ".*_elbow_joint": -1.0,  # Within joint limits [-1.047, 2.094]
+                "left_shoulder_roll_joint": 0.0,
+                "left_shoulder_pitch_joint": 0.0,
+                "right_shoulder_roll_joint": 0.0,
+                "right_shoulder_pitch_joint": 0.0,
                 
                 # Hand joints (Dex3) - neutral/open pose
                 "left_hand_index_0_joint": 0.0,
@@ -183,27 +182,33 @@ class TerminationsCfg:
 class EventCfg:
     """Event configuration."""
     
-    # Reset object position
+    # Reset object positions with slight randomization
     reset_object = EventTermCfg(
-        func=base_mdp.reset_root_state_uniform,
+        func=mdp.reset_object_poses_nut_pour,
         mode="reset",
         params={
             "pose_range": {
-                "x": [-0.05, 0.05],
-                "y": [-0.05, 0.05],
+                "x": (-0.02, 0.02),
+                "y": (-0.02, 0.02),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (-0.1, 0.1),
             },
-            "velocity_range": {},
-            "asset_cfg": SceneEntityCfg("object"),
+            "sorting_beaker_cfg": SceneEntityCfg("sorting_beaker"),
+            "factory_nut_cfg": SceneEntityCfg("factory_nut"),
+            "sorting_bowl_cfg": SceneEntityCfg("sorting_bowl"),
+            "sorting_scale_cfg": SceneEntityCfg("sorting_scale"),
         },
     )
 
 
 @configclass
-class MoveCylinderEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for G1 cylinder manipulation environment."""
+class NutPourEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for G1 NutPour manipulation environment."""
     
     # Scene settings
-    scene: MoveCylinderSceneCfg = MoveCylinderSceneCfg(
+    scene: NutPourTaskSceneCfg = NutPourTaskSceneCfg(
         num_envs=1,
         env_spacing=2.5,
         replicate_physics=True,

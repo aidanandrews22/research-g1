@@ -121,6 +121,7 @@ def plot_trajectory(
     save_plot_path=None,
 ):
     """Simple plot of the trajectory with state, gt action, and pred action."""
+    import os
 
     # Use non interactive backend for matplotlib if headless
     if save_plot_path is not None:
@@ -178,7 +179,18 @@ def plot_trajectory(
         ax.set_ylabel("Value", fontsize=10)
 
     if save_plot_path:
-        print("saving plot to", save_plot_path)
-        plt.savefig(save_plot_path, dpi=300, bbox_inches="tight")
+        # Handle both directory and file paths
+        if os.path.isdir(save_plot_path):
+            os.makedirs(save_plot_path, exist_ok=True)
+            filename = f"trajectory_{traj_id}_mse_{mse:.6f}.png"
+            full_path = os.path.join(save_plot_path, filename)
+        else:
+            # Assume it's a file path
+            os.makedirs(os.path.dirname(save_plot_path), exist_ok=True)
+            full_path = save_plot_path
+        
+        print("saving plot to", full_path)
+        plt.savefig(full_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
     else:
         plt.show()

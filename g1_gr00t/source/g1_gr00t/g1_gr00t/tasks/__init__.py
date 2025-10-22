@@ -7,5 +7,6 @@
 
 # Import tasks to trigger gym registration
 from . import move_cylinder  # noqa: F401
+from . import nutpour  # noqa: F401
 
-__all__ = ["move_cylinder"]
+__all__ = ["move_cylinder", "nutpour"]
